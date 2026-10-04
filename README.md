@@ -12,7 +12,7 @@ Upload a Cobertura XML coverage report to GitHub's code coverage API.
     label: code-coverage/jacoco
 ```
 
-The action handles everything else automatically: gzip/base64 encoding, resolving the correct commit SHA and ref, detecting PR number (from both `pull_request` and `push` events), and calling the upload API.
+The action handles everything else automatically: event routing, gzip/base64 encoding, resolving the correct commit SHA and ref, detecting PR numbers from both `pull_request` and `push` events, and calling the upload API.
 
 ## Inputs
 
@@ -25,6 +25,16 @@ The action handles everything else automatically: gzip/base64 encoding, resolvin
 | `wait-for-processing-timeout` | No | `160` | How many seconds to wait for processing before failing the step. Set to 0 to disable waiting |
 | `token` | No | `github.token` | GitHub token with `code-quality:write` permission |
 
+## Requirements
+
+The action runs Bash and Python directly on the runner. It requires:
+
+- Bash
+- Python 3.9 or later, available as `python3` on `PATH`
+- GitHub CLI (`gh`) when the action must discover an associated pull request, such as for a `push` event
+
+GitHub-hosted runners include these tools. When using a self-hosted runner, ensure they are installed and available on `PATH`.
+
 ## Permissions
 
 The calling workflow or job must grant `code-quality: write`. The action cannot declare this itself.
@@ -35,13 +45,16 @@ permissions:
   code-quality: write
 ```
 
-For push-only workflows where the action looks up PR numbers via `gh pr list`, also add `pull-requests: read`.
+When the action must discover an associated pull request, such as for a `push` event, it uses `gh pr list`. The calling workflow or job must also grant `pull-requests: read`.
+The runner must have the GitHub CLI installed. GitHub-hosted runners include it by default.
 
 ## Error handling
 
 By default, the action fails the workflow step (exits with code 1) when the upload is unsuccessful. This ensures you notice when coverage data is not being stored.
 
 By default, the action also waits for GitHub to finish processing a successful upload. If processing reports `failed`, or if it never reaches a terminal status before the timeout, the step fails the same way as an upload error.
+
+If the uploaded report is for a commit that is no longer the latest commit on its branch, GitHub skips the upload. The action logs a warning, does not wait for processing, and exits successfully.
 
 If coverage upload is best-effort in your workflow and you don't want a transient API failure to block CI, set `fail-on-error: false`:
 
@@ -69,12 +82,28 @@ If you want the action to return immediately after the upload request instead of
 
 ## Event handling
 
-The action auto-detects the event type and resolves the correct values:
+The action auto-detects the event type and resolves the correct behavior:
 
-- **`pull_request` / `pull_request_target`**: Uses the PR head SHA and ref (not the merge commit), and includes the PR number.
-- **`push`**: Uses `github.sha` and `github.ref`, and looks up whether the branch has an open PR via `gh pr list`.
+- **`pull_request` / `pull_request_target`**: Uses the PR head SHA (not the merge commit) and includes the PR number.
+- **Default-branch `push`**: Uses `github.sha` and `github.ref`.
+- **Non-default branch `push` with an open PR**: Looks up the PR number and uploads coverage for the pushed commit.
+- **Non-default branch `push` without an open PR**: Skips successfully instead of sending an upload request the API cannot associate with a PR.
 
-This means it works with both patterns — workflows triggered by `pull_request` and push-only workflows that serve PRs via branch pushes.
+When a pushed branch has multiple open pull requests in the repository, the action prefers the pull request targeting the default branch because coverage comparisons currently use the default branch as their baseline. If there is no unique default-branch target, the action skips the upload successfully and logs a warning.
+
+Configure workflows to run for pull requests and pushes to the default branch:
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+```
+
+Push-only workflows can upload PR coverage by granting `pull-requests: read`. Repositories may also use broader `push` triggers for other CI requirements; pushes without an open PR are skipped safely.
+
+See [Choosing a workflow strategy](docs/workflow-strategies.md) for trigger and job layouts, or [Upgrading](docs/upgrading.md) for version and compatibility guidance.
 
 ## Full example (separate upload job)
 
@@ -99,14 +128,12 @@ jobs:
       # ... build and generate cobertura.xml ...
 
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           name: cobertura-report
           path: cobertura.xml
 
   upload-coverage:
     needs: build
-    if: ${{ !cancelled() && needs.build.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
