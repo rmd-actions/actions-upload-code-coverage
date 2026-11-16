@@ -36,12 +36,15 @@ permissions:
 ```
 
 For push-only workflows where the action looks up PR numbers via `gh pr list`, also add `pull-requests: read`.
+The runner must have the GitHub CLI installed. GitHub-hosted runners include it by default.
 
 ## Error handling
 
 By default, the action fails the workflow step (exits with code 1) when the upload is unsuccessful. This ensures you notice when coverage data is not being stored.
 
 By default, the action also waits for GitHub to finish processing a successful upload. If processing reports `failed`, or if it never reaches a terminal status before the timeout, the step fails the same way as an upload error.
+
+If the uploaded report is for a commit that is no longer the latest commit on its branch, GitHub skips the upload. The action logs a warning, does not wait for processing, and exits successfully.
 
 If coverage upload is best-effort in your workflow and you don't want a transient API failure to block CI, set `fail-on-error: false`:
 
